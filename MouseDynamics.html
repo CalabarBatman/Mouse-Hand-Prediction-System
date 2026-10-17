@@ -1,0 +1,580 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Mouse Dynamics - Ball Task</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      text-align: center;
+      margin: 20px;
+    }
+
+    #area {
+      width: 900px;
+      height: 500px;
+      border: 2px solid black;
+      margin: 20px auto;
+      position: relative;
+      background: #f0f0f0;
+      overflow: hidden;
+      user-select: none;
+    }
+
+    .ball {
+      width: 25px;
+      height: 25px;
+      background: blue;
+      border-radius: 50%;
+      position: absolute;
+      cursor: grab;
+    }
+
+    .basket {
+      width: 110px;
+      height: 110px;
+      background: green;
+      position: absolute;
+      bottom: 15px;
+      right: 15px;
+      border-radius: 12px;
+    }
+
+    button, select, input {
+      padding: 10px;
+      margin: 5px;
+      font-size: 15px;
+    }
+
+    #status {
+      font-weight: bold;
+      margin-top: 10px;
+    }
+  </style>
+</head>
+<body>
+
+<h2>Drag all 6 balls into the basket</h2>
+
+<input type="text" id="userId" placeholder="Enter User ID" />
+<select id="handedness">
+  <option value="right">Right-handed</option>
+  <option value="left">Left-handed</option>
+</select>
+
+<br>
+
+<button id="startBtn">Start</button>
+<button id="downloadAttemptBtn">Download Attempt CSV</button>
+<button id="downloadDragBtn">Download Drag CSV</button>
+
+<div id="status">Press Start to begin</div>
+
+<div id="area">
+  <div id="basket" class="basket"></div>
+</div>
+
+<script>
+const area = document.getElementById("area");
+const basket = document.getElementById("basket");
+const statusText = document.getElementById("status");
+const userIdInput = document.getElementById("userId");
+const handednessInput = document.getElementById("handedness");
+
+let attemptRows = [];
+let dragRows = [];
+
+let mouseData = [];
+let dragSegments = [];
+let dragCount = 0;
+let ballsRemaining = 6;
+
+let isDragging = false;
+let currentBall = null;
+let currentDragPoints = [];
+let currentDragStart = null;
+let currentDragBallId = null;
+let attemptNumber = 0;
+let dragSequenceNumber = 0;
+
+let startTime = 0;
+let endTime = 0;
+let clickCount = 0;
+
+function resetSession() {
+  mouseData = [];
+  dragSegments = [];
+  dragCount = 0;
+  ballsRemaining = 6;
+  isDragging = false;
+  currentBall = null;
+  currentDragPoints = [];
+  currentDragStart = null;
+  currentDragBallId = null;
+  clickCount = 0;
+  dragSequenceNumber = 0;
+
+  document.querySelectorAll(".ball").forEach(ball => ball.remove());
+}
+
+function randomBallPosition(existingPositions, width = 25, height = 25) {
+  let x, y, safe = false;
+  let tries = 0;
+
+  while (!safe && tries < 500) {
+    x = Math.random() * (area.clientWidth - width - 10);
+    y = Math.random() * (area.clientHeight - height - 10);
+
+    safe = true;
+
+    const basketRect = basket.getBoundingClientRect();
+    const areaRect = area.getBoundingClientRect();
+
+    const basketX = basketRect.left - areaRect.left;
+    const basketY = basketRect.top - areaRect.top;
+
+    if (
+      x + width > basketX &&
+      x < basketX + basket.offsetWidth &&
+      y + height > basketY &&
+      y < basketY + basket.offsetHeight
+    ) {
+      safe = false;
+    }
+
+    for (const pos of existingPositions) {
+      const dx = x - pos.x;
+      const dy = y - pos.y;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      if (dist < 45) {
+        safe = false;
+        break;
+      }
+    }
+
+    tries++;
+  }
+
+  return { x, y };
+}
+
+function createBalls() {
+  const placed = [];
+
+  for (let i = 0; i < 6; i++) {
+    const ball = document.createElement("div");
+    ball.className = "ball";
+    ball.dataset.ballId = `ball_${i + 1}`;
+
+    const pos = randomBallPosition(placed);
+    placed.push(pos);
+
+    ball.style.left = pos.x + "px";
+    ball.style.top = pos.y + "px";
+
+    ball.addEventListener("mousedown", (e) => {
+      if (!startTime) return;
+
+      isDragging = true;
+      currentBall = ball;
+      currentDragBallId = ball.dataset.ballId;
+      dragCount++;
+      dragSequenceNumber++;
+
+      const rect = area.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      const y = e.clientY - rect.top;
+      const t = performance.now();
+
+      currentDragStart = { x, y, t };
+      currentDragPoints = [{ x, y, t }];
+    });
+
+    area.appendChild(ball);
+  }
+}
+
+area.addEventListener("mousemove", (e) => {
+  if (!startTime) return;
+
+  const rect = area.getBoundingClientRect();
+  const x = e.clientX - rect.left;
+  const y = e.clientY - rect.top;
+  const t = performance.now();
+
+  mouseData.push({ x, y, t });
+
+  if (isDragging && currentBall) {
+    currentBall.style.left = (x - 12) + "px";
+    currentBall.style.top = (y - 12) + "px";
+    currentDragPoints.push({ x, y, t });
+  }
+});
+
+area.addEventListener("click", () => {
+  if (!startTime) return;
+  clickCount++;
+});
+
+area.addEventListener("mouseup", () => {
+  if (!isDragging || !currentBall) return;
+
+  const t = performance.now();
+  const ballRect = currentBall.getBoundingClientRect();
+  const basketRect = basket.getBoundingClientRect();
+
+  const droppedInBasket =
+    ballRect.left < basketRect.right &&
+    ballRect.right > basketRect.left &&
+    ballRect.top < basketRect.bottom &&
+    ballRect.bottom > basketRect.top;
+
+  if (currentDragPoints.length > 0) {
+    dragSegments.push({
+      dragId: `attempt${attemptNumber}_drag${dragSequenceNumber}`,
+      ballId: currentDragBallId,
+      points: [...currentDragPoints],
+      droppedInBasket: droppedInBasket,
+      dragStartTime: currentDragStart ? currentDragStart.t : null,
+      dragEndTime: t
+    });
+  }
+
+  if (droppedInBasket) {
+    currentBall.remove();
+    ballsRemaining--;
+    statusText.textContent = `${6 - ballsRemaining}/6 balls collected`;
+
+    if (ballsRemaining === 0) {
+      endSession();
+    }
+  }
+
+  isDragging = false;
+  currentBall = null;
+  currentDragPoints = [];
+  currentDragStart = null;
+  currentDragBallId = null;
+});
+
+function average(arr) {
+  if (!arr.length) return 0;
+  return arr.reduce((sum, v) => sum + v, 0) / arr.length;
+}
+
+function stdDev(arr) {
+  if (arr.length < 2) return 0;
+  const avg = average(arr);
+  const variance = average(arr.map(v => (v - avg) ** 2));
+  return Math.sqrt(variance);
+}
+
+function distance(p1, p2) {
+  const dx = p2.x - p1.x;
+  const dy = p2.y - p1.y;
+  return Math.sqrt(dx * dx + dy * dy);
+}
+
+function angleBetween(p1, p2, p3) {
+  const a1 = Math.atan2(p2.y - p1.y, p2.x - p1.x);
+  const a2 = Math.atan2(p3.y - p2.y, p3.x - p2.x);
+  let diff = Math.abs(a2 - a1);
+  if (diff > Math.PI) diff = 2 * Math.PI - diff;
+  return diff;
+}
+
+function extractFeatures(points) {
+  if (points.length < 2) {
+    return {
+      totalDistance: 0,
+      straightLineDistance: 0,
+      trajectoryLengthRatio: 0,
+      movementEfficiency: 0,
+      avgSpeed: 0,
+      maxSpeed: 0,
+      speedStd: 0,
+      avgAcceleration: 0,
+      maxAcceleration: 0,
+      accelerationStd: 0,
+      avgJerk: 0,
+      maxJerk: 0,
+      avgAngleChange: 0,
+      trajectoryCurvature: 0,
+      pauseCount: 0,
+      pauseTime: 0,
+      movementCount: points.length
+    };
+  }
+
+  let totalDistance = 0;
+  let speeds = [];
+  let accelerations = [];
+  let jerks = [];
+  let angleChanges = [];
+  let pauseCount = 0;
+  let pauseTime = 0;
+
+  const pauseThresholdMs = 120;
+  const speedPauseThreshold = 15;
+
+  for (let i = 1; i < points.length; i++) {
+    const dist = distance(points[i - 1], points[i]);
+    const dtMs = points[i].t - points[i - 1].t;
+    const dt = dtMs / 1000;
+
+    totalDistance += dist;
+
+    if (dt > 0) {
+      const speed = dist / dt;
+      speeds.push(speed);
+
+      if (dtMs >= pauseThresholdMs || speed < speedPauseThreshold) {
+        pauseCount++;
+        pauseTime += dtMs;
+      }
+    }
+  }
+
+  for (let i = 1; i < speeds.length; i++) {
+    const dt = (points[i + 1].t - points[i].t) / 1000;
+    if (dt > 0) {
+      accelerations.push((speeds[i] - speeds[i - 1]) / dt);
+    }
+  }
+
+  for (let i = 1; i < accelerations.length; i++) {
+    const dt = (points[i + 2].t - points[i + 1].t) / 1000;
+    if (dt > 0) {
+      jerks.push((accelerations[i] - accelerations[i - 1]) / dt);
+    }
+  }
+
+  for (let i = 2; i < points.length; i++) {
+    angleChanges.push(angleBetween(points[i - 2], points[i - 1], points[i]));
+  }
+
+  const straightLineDistance = distance(points[0], points[points.length - 1]);
+  const trajectoryLengthRatio = straightLineDistance > 0 ? totalDistance / straightLineDistance : 0;
+  const movementEfficiency = totalDistance > 0 ? straightLineDistance / totalDistance : 0;
+  const trajectoryCurvature =
+    totalDistance > 0 ? angleChanges.reduce((a, b) => a + b, 0) / totalDistance : 0;
+
+  return {
+    totalDistance,
+    straightLineDistance,
+    trajectoryLengthRatio,
+    movementEfficiency,
+    avgSpeed: average(speeds),
+    maxSpeed: speeds.length ? Math.max(...speeds) : 0,
+    speedStd: stdDev(speeds),
+    avgAcceleration: average(accelerations.map(v => Math.abs(v))),
+    maxAcceleration: accelerations.length ? Math.max(...accelerations.map(v => Math.abs(v))) : 0,
+    accelerationStd: stdDev(accelerations),
+    avgJerk: average(jerks.map(v => Math.abs(v))),
+    maxJerk: jerks.length ? Math.max(...jerks.map(v => Math.abs(v))) : 0,
+    avgAngleChange: average(angleChanges),
+    trajectoryCurvature,
+    pauseCount,
+    pauseTime: pauseTime / 1000,
+    movementCount: points.length
+  };
+}
+
+function getBasketCenter() {
+  return {
+    x: basket.offsetLeft + basket.offsetWidth / 2,
+    y: basket.offsetTop + basket.offsetHeight / 2
+  };
+}
+
+function buildDragRow(drag) {
+  const userId = userIdInput.value.trim() || "user1";
+  const handedness = handednessInput.value;
+  const basketCenter = getBasketCenter();
+  const f = extractFeatures(drag.points);
+
+  const dragDuration =
+    drag.dragStartTime && drag.dragEndTime
+      ? (drag.dragEndTime - drag.dragStartTime) / 1000
+      : 0;
+
+  const startPoint = drag.points[0];
+  const endPoint = drag.points[drag.points.length - 1];
+
+  const startToBasket = Math.sqrt(
+    (startPoint.x - basketCenter.x) ** 2 + (startPoint.y - basketCenter.y) ** 2
+  );
+
+  const endToBasket = Math.sqrt(
+    (endPoint.x - basketCenter.x) ** 2 + (endPoint.y - basketCenter.y) ** 2
+  );
+
+  return {
+    UserID: userId,
+    AttemptID: `attempt_${attemptNumber}`,
+    DragID: drag.dragId,
+    BallID: drag.ballId,
+    Handedness: handedness,
+
+    DragDuration: dragDuration.toFixed(4),
+    DragSuccessful: drag.droppedInBasket ? 1 : 0,
+
+    TotalDistance: f.totalDistance.toFixed(4),
+    StraightLineDistance: f.straightLineDistance.toFixed(4),
+    TrajectoryLengthRatio: f.trajectoryLengthRatio.toFixed(6),
+    MovementEfficiency: f.movementEfficiency.toFixed(6),
+
+    AvgSpeed: f.avgSpeed.toFixed(4),
+    MaxSpeed: f.maxSpeed.toFixed(4),
+    SpeedStdDev: f.speedStd.toFixed(4),
+
+    AvgAcceleration: f.avgAcceleration.toFixed(4),
+    MaxAcceleration: f.maxAcceleration.toFixed(4),
+    AccelerationStdDev: f.accelerationStd.toFixed(4),
+
+    AvgJerk: f.avgJerk.toFixed(4),
+    MaxJerk: f.maxJerk.toFixed(4),
+
+    AvgAngleChange: f.avgAngleChange.toFixed(6),
+    TrajectoryCurvature: f.trajectoryCurvature.toFixed(6),
+
+    PauseCount: f.pauseCount,
+    PauseTime: f.pauseTime.toFixed(4),
+    MovementCount: f.movementCount,
+
+    StartX: startPoint.x.toFixed(2),
+    StartY: startPoint.y.toFixed(2),
+    EndX: endPoint.x.toFixed(2),
+    EndY: endPoint.y.toFixed(2),
+
+    StartToBasketDistance: startToBasket.toFixed(4),
+    EndToBasketDistance: endToBasket.toFixed(4)
+  };
+}
+
+function buildAttemptRow() {
+  const userId = userIdInput.value.trim() || "user1";
+  const handedness = handednessInput.value;
+  const attemptFeatures = extractFeatures(mouseData);
+  const totalCompletionTime = (endTime - startTime) / 1000;
+
+  const successfulDrags = dragSegments.filter(d => d.droppedInBasket);
+  const dragDurations = dragSegments.map(d =>
+    d.dragStartTime && d.dragEndTime ? (d.dragEndTime - d.dragStartTime) / 1000 : 0
+  );
+
+  const dragTrajectoryRatios = dragSegments.map(d => extractFeatures(d.points).trajectoryLengthRatio);
+  const dragCurvatures = dragSegments.map(d => extractFeatures(d.points).trajectoryCurvature);
+  const dragDistances = dragSegments.map(d => extractFeatures(d.points).totalDistance);
+
+  return {
+    UserID: userId,
+    AttemptID: `attempt_${attemptNumber}`,
+    Handedness: handedness,
+
+    TotalCompletionTime: totalCompletionTime.toFixed(4),
+    ClickCount: clickCount,
+    TotalDrags: dragSegments.length,
+    SuccessfulDrops: successfulDrags.length,
+    DragSuccessRate: dragSegments.length > 0 ? (successfulDrags.length / dragSegments.length).toFixed(4) : "0.0000",
+
+    TotalDistance: attemptFeatures.totalDistance.toFixed(4),
+    StraightLineDistance: attemptFeatures.straightLineDistance.toFixed(4),
+    TrajectoryLengthRatio: attemptFeatures.trajectoryLengthRatio.toFixed(6),
+    MovementEfficiency: attemptFeatures.movementEfficiency.toFixed(6),
+
+    AvgSpeed: attemptFeatures.avgSpeed.toFixed(4),
+    MaxSpeed: attemptFeatures.maxSpeed.toFixed(4),
+    SpeedStdDev: attemptFeatures.speedStd.toFixed(4),
+
+    AvgAcceleration: attemptFeatures.avgAcceleration.toFixed(4),
+    MaxAcceleration: attemptFeatures.maxAcceleration.toFixed(4),
+    AccelerationStdDev: attemptFeatures.accelerationStd.toFixed(4),
+
+    AvgJerk: attemptFeatures.avgJerk.toFixed(4),
+    MaxJerk: attemptFeatures.maxJerk.toFixed(4),
+
+    AvgAngleChange: attemptFeatures.avgAngleChange.toFixed(6),
+    TrajectoryCurvature: attemptFeatures.trajectoryCurvature.toFixed(6),
+
+    PauseCount: attemptFeatures.pauseCount,
+    PauseTime: attemptFeatures.pauseTime.toFixed(4),
+    MovementCount: attemptFeatures.movementCount,
+
+    AvgDragDuration: average(dragDurations).toFixed(4),
+    MaxDragDuration: dragDurations.length ? Math.max(...dragDurations).toFixed(4) : "0.0000",
+    AvgDragDistance: average(dragDistances).toFixed(4),
+    AvgDragTrajectoryRatio: average(dragTrajectoryRatios).toFixed(6),
+    AvgDragCurvature: average(dragCurvatures).toFixed(6)
+  };
+}
+
+function endSession() {
+  endTime = performance.now();
+
+  dragSegments.forEach(drag => {
+    dragRows.push(buildDragRow(drag));
+  });
+
+  attemptRows.push(buildAttemptRow());
+
+  statusText.textContent = "Task complete. Attempt row and drag rows added.";
+  alert("Task complete. You can now download both CSV files.");
+}
+
+function convertToCSV(rows) {
+  if (!rows.length) return "";
+  const headers = Object.keys(rows[0]);
+  const lines = [headers.join(",")];
+
+  for (const row of rows) {
+    lines.push(headers.map(h => row[h]).join(","));
+  }
+
+  return lines.join("\n");
+}
+
+function downloadCSV(rows, filename) {
+  if (!rows.length) {
+    alert("No data available yet.");
+    return;
+  }
+
+  const csv = convertToCSV(rows);
+  const blob = new Blob([csv], { type: "text/csv" });
+  const url = URL.createObjectURL(blob);
+
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+
+  URL.revokeObjectURL(url);
+}
+
+document.getElementById("startBtn").addEventListener("click", () => {
+  const userId = userIdInput.value.trim();
+  if (!userId) {
+    alert("Please enter a User ID first.");
+    return;
+  }
+
+  attemptNumber++;
+  resetSession();
+  createBalls();
+  startTime = performance.now();
+  endTime = 0;
+  statusText.textContent = "Task started. Drag each ball into the basket.";
+});
+
+document.getElementById("downloadAttemptBtn").addEventListener("click", () => {
+  downloadCSV(attemptRows, "attempt_level_mouse_data.csv");
+});
+
+document.getElementById("downloadDragBtn").addEventListener("click", () => {
+  downloadCSV(dragRows, "drag_level_mouse_data.csv");
+});
+</script>
+
+</body>
+</html>
